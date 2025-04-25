@@ -9,7 +9,7 @@ import os
 from collections import abc
 from pointnet2_ops import pointnet2_utils
 
-from utils.logger import print_log
+from .logger import print_log
 
 
 def fps(data, number):

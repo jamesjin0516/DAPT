@@ -14,11 +14,11 @@ scheduler: {
   } }
 
 dataset: {
-  train: { _base_: cfgs/dataset_configs/ScanObjectNN_objectonly.yaml,
+  train: { _base_: DAPT/cfgs/dataset_configs/ScanObjectNN_objectonly.yaml,
            others: { subset: 'train' } },
-  val: { _base_: cfgs/dataset_configs/ScanObjectNN_objectonly.yaml,
+  val: { _base_: DAPT/cfgs/dataset_configs/ScanObjectNN_objectonly.yaml,
          others: { subset: 'test' } },
-  test: { _base_: cfgs/dataset_configs/ScanObjectNN_objectonly.yaml,
+  test: { _base_: DAPT/cfgs/dataset_configs/ScanObjectNN_objectonly.yaml,
           others: { subset: 'test' } } }
 model: {
   NAME: PointTransformer_DAPT,

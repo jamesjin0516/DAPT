@@ -3,17 +3,18 @@ import os
 import torch
 import torch.nn as nn
 
-from tools import builder
-from utils import misc, dist_utils
+from . import builder
+from ..utils import misc, dist_utils
 import time
-from utils.logger import *
-from utils.AverageMeter import AverageMeter
+from ..utils.logger import *
+from ..utils.AverageMeter import AverageMeter
 
 import numpy as np
-from datasets import data_transforms
+from ..datasets import data_transforms
 from pointnet2_ops import pointnet2_utils
 from torchvision import transforms
 from sklearn.manifold import TSNE
+from sklearn.metrics import f1_score, roc_auc_score
 from matplotlib import pyplot as plt
 
 train_transforms = transforms.Compose(
@@ -60,10 +61,13 @@ class Acc_Metric:
 
 
 def run_net(args, config, train_writer=None, val_writer=None):
-    logger = get_logger(args.log_name)
     # build dataset
     (train_sampler, train_dataloader), (_, test_dataloader), = builder.dataset_builder(args, config.dataset.train), \
         builder.dataset_builder(args, config.dataset.val)
+    run_net_core(args, config, train_dataloader, test_dataloader, train_sampler, train_writer, val_writer)
+
+def run_net_core(args, config, train_dataloader, test_dataloader, train_sampler=None, train_writer=None, val_writer=None):
+    logger = get_logger(args.log_name)
     # build model
     base_model = builder.model_builder(config.model)
 
@@ -149,7 +153,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             fps_idx = fps_idx[:, np.random.choice(point_all, npoints, False)]
             points = pointnet2_utils.gather_operation(points.transpose(1, 2).contiguous(), fps_idx).transpose(1,
                                                                                                               2).contiguous()  # (B, N, 3)
-            points = train_transforms(points)
+            # points = train_transforms(points)
 
             ret = base_model(points)
 
@@ -192,7 +196,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         if isinstance(scheduler, list):
             for item in scheduler:
                 item.step(epoch)
-        else:
+        elif scheduler is not None:
             scheduler.step(epoch)
         epoch_end_time = time.time()
 
@@ -343,9 +347,13 @@ def validate_vote(base_model, test_dataloader, epoch, val_writer, args, config, 
 
 
 def test_net(args, config):
+    _, test_dataloader = builder.dataset_builder(args, config.dataset.test)
+    test_net_core(args, config, test_dataloader)
+
+
+def test_net_core(args, config, test_dataloader):
     logger = get_logger(args.log_name)
     print_log('Tester start ... ', logger=logger)
-    _, test_dataloader = builder.dataset_builder(args, config.dataset.test)
     base_model = builder.model_builder(config.model)
     # load checkpoints
     builder.load_model(base_model, args.ckpts, logger=logger)  # for finetuned transformer
@@ -404,7 +412,9 @@ def test(base_model, test_dataloader, args, config, logger=None):
             test_label = dist_utils.gather_tensor(test_label, args)
 
         acc = (test_pred == test_label).sum() / float(test_label.size(0)) * 100.
-        print_log('[TEST] acc = %.4f' % acc, logger=logger)
+        f1 = f1_score(test_label.cpu(), test_pred.cpu())
+        auc = roc_auc_score(test_label.cpu(), test_pred.cpu())
+        print_log('[TEST] acc = %.4f, f1 = %.4f, auc = %.4f' % (acc, f1, auc), logger=logger)
 
         if args.vote:
 

@@ -1,0 +1,5 @@
+extensions/**/build
+extensions/**/*.egg-info
+extensions/**/*.egg
+*.pyc
+*.pth

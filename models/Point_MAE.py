@@ -9,14 +9,17 @@ from timm.models.layers import DropPath, trunc_normal_
 import numpy as np
 
 from .build import MODELS
-from utils import misc
-from utils.checkpoint import get_missing_parameters_message, get_unexpected_parameters_message
-from utils.logger import *
+from ..utils import misc
+from ..utils.checkpoint import get_missing_parameters_message, get_unexpected_parameters_message
+from ..utils.logger import *
 import random
 from knn_cuda import KNN
-from extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
+from ..extensions.chamfer_dist import ChamferDistanceL1, ChamferDistanceL2
 
 from torch.utils.checkpoint import checkpoint
+
+
+PDIM = 8
 
 
 class Encoder(nn.Module):
@@ -24,7 +27,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.encoder_channel = encoder_channel
         self.first_conv = nn.Sequential(
-            nn.Conv1d(3, 128, 1),
+            nn.Conv1d(PDIM, 128, 1),
             nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
             nn.Conv1d(128, 256, 1)
@@ -43,7 +46,7 @@ class Encoder(nn.Module):
             feature_global : B G C
         '''
         bs, g, n, _ = point_groups.shape
-        point_groups = point_groups.reshape(bs * g, n, 3)
+        point_groups = point_groups.reshape(bs * g, n, PDIM)
         # encoder
         feature = self.first_conv(point_groups.transpose(2, 1))  # BG 256 n
         feature_global = torch.max(feature, dim=2, keepdim=True)[0]  # BG 256 1
@@ -78,7 +81,7 @@ class Group(nn.Module):  # FPS + KNN
         idx = idx + idx_base
         idx = idx.view(-1)
         neighborhood = xyz.view(batch_size * num_points, -1)[idx, :]
-        neighborhood = neighborhood.view(batch_size, self.num_group, self.group_size, 3).contiguous()
+        neighborhood = neighborhood.view(batch_size, self.num_group, self.group_size, PDIM).contiguous()
         # normalize
         neighborhood = neighborhood - center.unsqueeze(2)
         return neighborhood, center
@@ -483,7 +486,7 @@ class PointTransformer(nn.Module):
         self.cls_pos = nn.Parameter(torch.randn(1, 1, self.trans_dim))
 
         self.pos_embed = nn.Sequential(
-            nn.Linear(3, 128),
+            nn.Linear(PDIM, 128),
             nn.GELU(),
             nn.Linear(128, self.trans_dim)
         )

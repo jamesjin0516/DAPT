@@ -4,9 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import DropPath, trunc_normal_
 from .build import MODELS
-from utils import misc
-from utils.checkpoint import get_missing_parameters_message, get_unexpected_parameters_message
-from utils.logger import *
+from ..utils import misc
+from ..utils.checkpoint import get_missing_parameters_message, get_unexpected_parameters_message
+from ..utils.logger import *
 from knn_cuda import KNN
 
 

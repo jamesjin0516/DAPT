@@ -1,11 +1,11 @@
 import torch.optim as optim
 
 from torch.utils.data import DataLoader
-from datasets import build_dataset_from_cfg
-from datasets.ModelNetDataset import ModelNet40SVM
-from models import build_model_from_cfg
-from utils.misc import *
-from utils.misc import summary_parameters
+from ..datasets import build_dataset_from_cfg
+from ..datasets.ModelNetDataset import ModelNet40SVM
+from ..models import build_model_from_cfg
+from ..utils.misc import *
+from ..utils.misc import summary_parameters
 from timm.scheduler import CosineLRScheduler
 
 

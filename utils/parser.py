@@ -1,9 +1,10 @@
 import os
 import argparse
 from pathlib import Path
+import shlex
 
 
-def get_args():
+def get_args(arg_str=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--config',
@@ -76,7 +77,10 @@ def get_args():
     parser.add_argument(
         '--fold', type=int, default=-1)
 
-    args = parser.parse_args()
+    if arg_str is not None:
+        args = parser.parse_args(shlex.split(arg_str))
+    else:
+        args = parser.parse_args()
 
     if args.test and args.resume:
         raise ValueError(

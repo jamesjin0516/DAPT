@@ -4,10 +4,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import DropPath, trunc_normal_
 from .build import MODELS
-from utils import misc
-from utils.checkpoint import get_missing_parameters_message, get_unexpected_parameters_message
-from utils.logger import *
+from ..utils import misc
+from ..utils.checkpoint import get_missing_parameters_message, get_unexpected_parameters_message
+from ..utils.logger import *
 from knn_cuda import KNN
+
+
+PDIM = 8
 
 
 class Encoder(nn.Module):
@@ -15,7 +18,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.encoder_channel = encoder_channel
         self.first_conv = nn.Sequential(
-            nn.Conv1d(3, 128, 1),
+            nn.Conv1d(PDIM, 128, 1),
             nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
             nn.Conv1d(128, 256, 1)
@@ -33,8 +36,8 @@ class Encoder(nn.Module):
             -----------------
             feature_global : B G C
         '''
-        bs, g, n, _ = point_groups.shape
-        point_groups = point_groups.reshape(bs * g, n, 3)
+        bs, g, n, _ = point_groups.shape    # n = # points in each group
+        point_groups = point_groups.reshape(bs * g, n, PDIM)
         # encoder
         feature = self.first_conv(point_groups.transpose(2, 1))  # BG 256 n
         feature_global = torch.max(feature, dim=2, keepdim=True)[0]  # BG 256 1
@@ -69,7 +72,7 @@ class Group(nn.Module):  # FPS + KNN
         idx = idx + idx_base
         idx = idx.view(-1)
         neighborhood = xyz.view(batch_size * num_points, -1)[idx, :]
-        neighborhood = neighborhood.view(batch_size, self.num_group, self.group_size, 3).contiguous()
+        neighborhood = neighborhood.view(batch_size, self.num_group, self.group_size, PDIM).contiguous()
         # normalize
         neighborhood = neighborhood - center.unsqueeze(2)
         return neighborhood, center
@@ -251,7 +254,7 @@ class PointTransformer_DAPT(nn.Module):
         self.cls_pos = nn.Parameter(torch.randn(1, 1, self.trans_dim))
 
         self.pos_embed = nn.Sequential(
-            nn.Linear(3, 128),
+            nn.Linear(PDIM, 128),
             nn.GELU(),
             nn.Linear(128, self.trans_dim)
         )
@@ -328,7 +331,19 @@ class PointTransformer_DAPT(nn.Module):
                     base_ckpt[k[len('base_model.'):]] = base_ckpt[k]
                     del base_ckpt[k]
 
-            incompatible = self.load_state_dict(base_ckpt, strict=False)
+            size_mismatches = []
+            while True:
+                try:
+                    incompatible = self.load_state_dict(base_ckpt, strict=False)
+                    break
+                except RuntimeError as e:
+                    if "size mismatch" in (e_str := str(e)):
+                        start_i = e_str.index("size mismatch for ") + len("size mismatch for ")
+                        end_i = e_str.index(": copying a param")
+                        param_name = e_str[start_i : end_i]
+                        size_mismatches.append(param_name)
+                        del base_ckpt[param_name]
+            print_log(f"Mismatched keys: {size_mismatches}", logger='Transformer')
 
             if incompatible.missing_keys:
                 print_log('missing_keys', logger='Transformer')
@@ -362,7 +377,7 @@ class PointTransformer_DAPT(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, pts):
-        neighborhood, center = self.group_divider(pts)
+        neighborhood, center = self.group_divider(pts)    # [batch_size, num_group, group_size, PDIM]
         group_input_tokens = self.encoder(neighborhood)  # B G N
 
         group_input_tokens = apply_tfts(group_input_tokens, self.tfts_gamma_1, self.tfts_beta_1)

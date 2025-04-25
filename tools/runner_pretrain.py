@@ -2,16 +2,16 @@ import torch
 import torch.nn as nn
 import os
 import json
-from tools import builder
-from utils import misc, dist_utils
+from . import builder
+from ..utils import misc, dist_utils
 import time
-from utils.logger import *
-from utils.AverageMeter import AverageMeter
+from ..utils.logger import *
+from ..utils.AverageMeter import AverageMeter
 
 from sklearn.svm import LinearSVC
 import numpy as np
 from torchvision import transforms
-from datasets import data_transforms
+from ..datasets import data_transforms
 from pointnet2_ops import pointnet2_utils
 
 train_transforms = transforms.Compose(
@@ -54,12 +54,16 @@ def evaluate_svm(train_features, train_labels, test_features, test_labels):
 
 
 def run_net(args, config, train_writer=None, val_writer=None):
-    logger = get_logger(args.log_name)
     # build dataset
     (train_sampler, train_dataloader), (_, test_dataloader), = builder.dataset_builder(args, config.dataset.train), \
         builder.dataset_builder(args, config.dataset.val)
     (_, extra_train_dataloader) = builder.dataset_builder(args, config.dataset.extra_train) if config.dataset.get(
         'extra_train') else (None, None)
+    run_net(args, config, train_sampler, train_dataloader, train_writer, val_writer)
+
+
+def run_net_core(args, config, train_sampler, train_dataloader, train_writer=None, val_writer=None):
+    logger = get_logger(args.log_name)
     # build model
     base_model = builder.model_builder(config.model)
     if args.use_gpu:
@@ -121,7 +125,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             n_itr = epoch * n_batches + idx
 
             data_time.update(time.time() - batch_start_time)
-            npoints = config.dataset.train.others.npoints
+            npoints = config.npoints
             dataset_name = config.dataset.train._base_.NAME
             if dataset_name == 'ShapeNet':
                 points = data.cuda()
