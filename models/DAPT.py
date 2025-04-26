@@ -286,11 +286,11 @@ class PointTransformer_DAPT(nn.Module):
         self.norm = nn.LayerNorm(self.trans_dim)
         self.cls_head_finetune = nn.Sequential(
             nn.Linear(self.trans_dim * self.HEAD_CHANEL, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256) if config.no_batchnorm else nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
             nn.Linear(256, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256) if config.no_batchnorm else nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
             nn.Linear(256, self.cls_dim)
@@ -377,7 +377,10 @@ class PointTransformer_DAPT(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, pts):
-        neighborhood, center = self.group_divider(pts)    # [batch_size, num_group, group_size, PDIM]
+        if len(pts.shape) == 3:
+            neighborhood, center = self.group_divider(pts)    # [batch_size, num_group, group_size, PDIM]
+        else:
+            neighborhood, center = pts, pts[:, :, 0]
         group_input_tokens = self.encoder(neighborhood)  # B G N
 
         group_input_tokens = apply_tfts(group_input_tokens, self.tfts_gamma_1, self.tfts_beta_1)

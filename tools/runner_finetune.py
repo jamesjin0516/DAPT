@@ -13,8 +13,9 @@ import numpy as np
 from ..datasets import data_transforms
 from pointnet2_ops import pointnet2_utils
 from torchvision import transforms
+from scipy.stats import pearsonr
 from sklearn.manifold import TSNE
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, r2_score, roc_auc_score
 from matplotlib import pyplot as plt
 
 train_transforms = transforms.Compose(
@@ -100,7 +101,7 @@ def run_net_core(args, config, train_dataloader, test_dataloader, train_sampler=
         print_log('Using Distributed Data parallel ...', logger=logger)
     else:
         print_log('Using Data parallel ...', logger=logger)
-        base_model = nn.DataParallel(base_model).cuda()
+        base_model = nn.DataParallel(base_model, device_ids=[args.local_rank, 1 - args.local_rank]).cuda()
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
 
@@ -135,25 +136,27 @@ def run_net_core(args, config, train_dataloader, test_dataloader, train_sampler=
             points = data[0].cuda()
             label = data[1].cuda()
 
-            if npoints == 1024:
-                point_all = 1200
-            elif npoints == 2048:
-                point_all = 2400
-            elif npoints == 4096:
-                point_all = 4800
-            elif npoints == 8192:
-                point_all = 8192
-            else:
-                raise NotImplementedError()
+            # If the spikes doesn't come as already binned
+            if len(points.shape) == 3:
+                if npoints == 1024:
+                    point_all = 1200
+                elif npoints == 2048:
+                    point_all = 2400
+                elif npoints == 4096:
+                    point_all = 4800
+                elif npoints == 8192:
+                    point_all = 8192
+                else:
+                    raise NotImplementedError()
 
-            if points.size(1) < point_all:
-                point_all = points.size(1)
+                if points.size(1) < point_all:
+                    point_all = points.size(1)
 
-            fps_idx = pointnet2_utils.furthest_point_sample(points, point_all)  # (B, npoint)
-            fps_idx = fps_idx[:, np.random.choice(point_all, npoints, False)]
-            points = pointnet2_utils.gather_operation(points.transpose(1, 2).contiguous(), fps_idx).transpose(1,
-                                                                                                              2).contiguous()  # (B, N, 3)
-            # points = train_transforms(points)
+                fps_idx = pointnet2_utils.furthest_point_sample(points, point_all)  # (B, npoint)
+                fps_idx = fps_idx[:, np.random.choice(point_all, npoints, False)]
+                points = pointnet2_utils.gather_operation(points.transpose(1, 2).contiguous(), fps_idx).transpose(1,
+                                                                                                                2).contiguous()  # (B, N, 3)
+                points = train_transforms(points)
 
             ret = base_model(points)
 
@@ -252,12 +255,14 @@ def validate(base_model, test_dataloader, epoch, val_writer, args, config, logge
             points = data[0].cuda()
             label = data[1].cuda()
 
-            points = misc.fps(points, npoints)
+            # If the spikes doesn't come as already binned
+            if len(points.shape) == 3:
+                points = misc.fps(points, npoints)
 
             logits = base_model(points)
             target = label.view(-1)
 
-            pred = logits.argmax(-1).view(-1)
+            pred = logits.argmax(-1).view(-1) if base_model.module.is_cls else logits.view(-1)
 
             test_pred.append(pred.detach())
             test_label.append(target.detach())
@@ -269,8 +274,16 @@ def validate(base_model, test_dataloader, epoch, val_writer, args, config, logge
             test_pred = dist_utils.gather_tensor(test_pred, args)
             test_label = dist_utils.gather_tensor(test_label, args)
 
-        acc = (test_pred == test_label).sum() / float(test_label.size(0)) * 100.
-        print_log('[Validation] EPOCH: %d  acc = %.4f' % (epoch, acc), logger=logger)
+        if base_model.module.is_cls:
+            acc = (test_pred == test_label).sum() / float(test_label.size(0)) * 100.
+            f1 = f1_score(test_label.cpu(), test_pred.cpu())
+            auc = roc_auc_score(test_label.cpu(), test_pred.cpu())
+            print_log("[Validation] EPOCH: %d  acc = %.4f, f1 = %.4f, auc = %.4f" % (epoch, acc, f1, auc), logger=logger)
+        else:
+            R2 = r2_score(test_label.cpu(), test_pred.cpu())
+            corr = pearsonr(test_label.cpu(), test_pred.cpu())[0]
+            print_log("[Validation] EPOCH: %d  R^2 = %.4f, corr = %.4f" % (epoch, R2, corr), logger=logger)
+            acc = R2
 
         if args.distributed:
             torch.cuda.synchronize()
@@ -382,10 +395,12 @@ def test(base_model, test_dataloader, args, config, logger=None):
             if idx <= 0.2 * len(test_dataloader):
                 points = data[0].cuda()
                 label = data[1].cuda()
-                points = misc.fps(points, npoints)
+                # If the spikes doesn't come as already binned
+                if len(points.shape) == 3:
+                    points = misc.fps(points, npoints)
                 logits = base_model(points)
                 target = label.view(-1)
-                pred = logits.argmax(-1).view(-1)
+                pred = logits.argmax(-1).view(-1) if base_model.is_cls else logits.view(-1)
                 test_pred.append(pred.detach())
                 test_label.append(target.detach())
             else:
@@ -393,10 +408,12 @@ def test(base_model, test_dataloader, args, config, logger=None):
                 time_start = time.time()
                 points = data[0].cuda()
                 label = data[1].cuda()
-                points = misc.fps(points, npoints)
+                # If the spikes doesn't come as already binned
+                if len(points.shape) == 3:
+                    points = misc.fps(points, npoints)
                 logits = base_model(points)
                 target = label.view(-1)
-                pred = logits.argmax(-1).view(-1)
+                pred = logits.argmax(-1).view(-1) if base_model.is_cls else logits.view(-1)
                 test_pred.append(pred.detach())
                 test_label.append(target.detach())
                 torch.cuda.synchronize()
@@ -411,10 +428,16 @@ def test(base_model, test_dataloader, args, config, logger=None):
             test_pred = dist_utils.gather_tensor(test_pred, args)
             test_label = dist_utils.gather_tensor(test_label, args)
 
-        acc = (test_pred == test_label).sum() / float(test_label.size(0)) * 100.
-        f1 = f1_score(test_label.cpu(), test_pred.cpu())
-        auc = roc_auc_score(test_label.cpu(), test_pred.cpu())
-        print_log('[TEST] acc = %.4f, f1 = %.4f, auc = %.4f' % (acc, f1, auc), logger=logger)
+        if base_model.is_cls:
+            acc = (test_pred == test_label).sum() / float(test_label.size(0)) * 100.
+            f1 = f1_score(test_label.cpu(), test_pred.cpu())
+            auc = roc_auc_score(test_label.cpu(), test_pred.cpu())
+            print_log("[TEST] acc = %.4f, f1 = %.4f, auc = %.4f" % (acc, f1, auc), logger=logger)
+        else:
+            R2 = r2_score(test_label.cpu(), test_pred.cpu())
+            corr = pearsonr(test_label.cpu(), test_pred.cpu())[0]
+            print_log("[TEST] R^2 = %.4f, corr = %.4f" % (R2, corr), logger=logger)
+            acc = R2
 
         if args.vote:
 

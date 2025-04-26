@@ -1,6 +1,7 @@
 import os
 
 import math
+from sklearn.metrics import r2_score
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -472,6 +473,7 @@ class PointTransformer(nn.Module):
         self.depth = config.depth
         self.drop_path_rate = config.drop_path_rate
         self.cls_dim = config.cls_dim
+        self.is_cls = config.is_cls
         self.num_heads = config.num_heads
 
         self.group_size = config.group_size
@@ -503,11 +505,11 @@ class PointTransformer(nn.Module):
 
         self.cls_head_finetune = nn.Sequential(
             nn.Linear(self.trans_dim * 2, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256) if config.no_batchnorm else nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
             nn.Linear(256, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256) if config.no_batchnorm else nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
             nn.Linear(256, self.cls_dim)
@@ -520,12 +522,17 @@ class PointTransformer(nn.Module):
 
     def build_loss_func(self):
         self.loss_ce = nn.CrossEntropyLoss()
+        self.loss_mse = nn.MSELoss()
 
     def get_loss_acc(self, ret, gt):
-        loss = self.loss_ce(ret, gt.long())
-        pred = ret.argmax(-1)
-        acc = (pred == gt).sum() / float(gt.size(0))
-        return loss, acc * 100
+        loss = self.loss_ce(ret, gt.long()) if self.is_cls else self.loss_mse(ret, gt)
+        pred = ret.argmax(-1) if self.is_cls else ret
+        if self.is_cls:
+            acc = (pred == gt).sum() / float(gt.size(0))
+            return loss, acc * 100
+        r2 = r2_score(gt.view(-1).cpu(), pred.view(-1).detach().cpu())
+        if math.isnan(r2): r2 = -1.0
+        return loss, torch.tensor(r2)
 
     def load_model_from_ckpt(self, bert_ckpt_path):
         if bert_ckpt_path is not None:
@@ -540,7 +547,19 @@ class PointTransformer(nn.Module):
                     base_ckpt[k[len('base_model.'):]] = base_ckpt[k]
                     del base_ckpt[k]
 
-            incompatible = self.load_state_dict(base_ckpt, strict=False)
+            size_mismatches = []
+            while True:
+                try:
+                    incompatible = self.load_state_dict(base_ckpt, strict=False)
+                    break
+                except RuntimeError as e:
+                    if "size mismatch" in (e_str := str(e)):
+                        start_i = e_str.index("size mismatch for ") + len("size mismatch for ")
+                        end_i = e_str.index(": copying a param")
+                        param_name = e_str[start_i : end_i]
+                        size_mismatches.append(param_name)
+                        del base_ckpt[param_name]
+            print_log(f"Mismatched keys: {size_mismatches}", logger='Transformer')
 
             if incompatible.missing_keys:
                 print_log('missing_keys', logger='Transformer')
@@ -575,7 +594,10 @@ class PointTransformer(nn.Module):
 
     def forward(self, pts):
 
-        neighborhood, center = self.group_divider(pts)
+        if len(pts.shape) == 3:
+            neighborhood, center = self.group_divider(pts)    # [batch_size, num_group, group_size, PDIM]
+        else:
+            neighborhood, center = pts, pts[:, :, 0]
         group_input_tokens = self.encoder(neighborhood)  # B G N
 
         cls_tokens = self.cls_token.expand(group_input_tokens.size(0), -1, -1)
